@@ -252,7 +252,28 @@ This validates local text/media fallback and audio helper behavior. It does not 
 
 ## Milestone 2 — Campaign and outbound call records
 
-### Completed sub-milestone: campaign persistence
+### Sub-milestone 2.1 — Campaign persistence and reporting foundation ✅
+
+**Status:** Implemented and locally tested.
+
+This sub-milestone provides the **campaign approval and reporting plumbing**. It does **not** initiate an Exotel call.
+
+It currently supports:
+
+- Creating campaign records.
+- Approving a campaign before calls may be added.
+- Creating individual queued call records for approved campaigns.
+- Listing call records newest-first for future admin/report views.
+- Storing the fields needed to correlate and report real calls later.
+
+It does not yet:
+
+- Dial a seller through Exotel.
+- Upload or validate seller spreadsheets.
+- Authenticate Gmail administrators.
+- Receive real Exotel status callbacks.
+- Record live transcripts or outcomes.
+- Generate or download an XLSX report.
 
 - **Campaign records are isolated from live media**
 

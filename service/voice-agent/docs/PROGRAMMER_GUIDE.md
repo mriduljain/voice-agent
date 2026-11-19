@@ -226,7 +226,11 @@ Do not claim telephone or cloud validation until it is actually performed.
 
 ## Milestone 2: campaign and call persistence
 
-Milestone 2 begins by storing campaign approval and call records independently from live carrier media.
+### Sub-milestone 2.1: campaign persistence and reporting foundation ✅
+
+**Status:** Implemented and locally tested.
+
+Milestone 2 begins with campaign approval and call-record persistence independently from live carrier media. This sub-milestone is the **plumbing for campaign generation and reporting**; it does not initiate an Exotel call.
 
 - `app/campaign_store.py` defines async SQLAlchemy models and CRUD operations.
 - `app/campaign_api.py` exposes campaign create/approve/list and call-create/list endpoints.
