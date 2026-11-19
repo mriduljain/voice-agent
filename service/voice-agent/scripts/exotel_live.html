@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Local Exotel audio simulator</title>
+<h1>Local Exotel audio simulator</h1>
+<p>Use headphones to prevent the microphone from picking up the response. Allow microphone access when prompted.</p>
+<button id="start">Start conversation</button>
+<button id="stop" disabled>Stop</button>
+<p id="status">Ready</p>
+<script>
+const start = document.querySelector('#start');
+const stop = document.querySelector('#stop');
+const status = document.querySelector('#status');
+const rate = 16000;
+let socket, stream, context, processor, source, silence;
+let playbackTime = 0;
+let carry = new Float32Array(0), position = 0;
+
+function end(message) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({event: 'stop', stream_sid: 'local-live'}));
+    socket.close();
+  } else if (socket && socket.readyState === WebSocket.CONNECTING) socket.close();
+  if (processor) processor.disconnect();
+  if (source) source.disconnect();
+  if (silence) silence.disconnect();
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  if (context && context.state !== 'closed') context.close();
+  socket = stream = context = processor = source = silence = null;
+  carry = new Float32Array(0); position = 0; playbackTime = 0;
+  start.disabled = false; stop.disabled = true; status.textContent = message;
+}
+
+start.onclick = async () => {
+  start.disabled = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}, video: false});
+    context = new AudioContext();
+    await context.resume();
+    socket = new WebSocket('ws://127.0.0.1:8000/telephony/exotel/media');
+    socket.onopen = () => {
+      socket.send(JSON.stringify({event: 'start', start: {stream_sid: 'local-live', call_sid: 'local-live', media_format: {sample_rate: rate}}}));
+      source = context.createMediaStreamSource(stream);
+      processor = context.createScriptProcessor(2048, 1, 1);
+      silence = context.createGain(); silence.gain.value = 0;
+      source.connect(processor); processor.connect(silence); silence.connect(context.destination);
+      processor.onaudioprocess = event => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const samples = new Float32Array(carry.length + input.length);
+        samples.set(carry); samples.set(input, carry.length);
+        const output = [];
+        const step = context.sampleRate / rate;
+        while (position + 1 < samples.length) {
+          const i = Math.floor(position), fraction = position - i;
+          output.push(samples[i] + (samples[i + 1] - samples[i]) * fraction);
+          position += step;
+        }
+        const used = Math.floor(position);
+        carry = samples.slice(used); position -= used;
+        const bytes = new Uint8Array(output.length * 2);
+        const view = new DataView(bytes.buffer);
+        output.forEach((sample, i) => view.setInt16(i * 2, Math.round(Math.max(-1, Math.min(1, sample)) * (sample < 0 ? 32768 : 32767)), true));
+        let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+        socket.send(JSON.stringify({event: 'media', stream_sid: 'local-live', media: {payload: btoa(binary)}}));
+      };
+      stop.disabled = false; status.textContent = 'Connected. Speak into your microphone.';
+    };
+    socket.onmessage = event => {
+      const message = JSON.parse(event.data);
+      if (message.event !== 'media') return;
+      const binary = atob(message.media.payload);
+      const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+      const view = new DataView(bytes.buffer);
+      const buffer = context.createBuffer(1, bytes.length / 2, rate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < channel.length; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
+      const player = context.createBufferSource(); player.buffer = buffer; player.connect(context.destination);
+      playbackTime = Math.max(context.currentTime, playbackTime);
+      player.start(playbackTime); playbackTime += buffer.duration;
+    };
+    socket.onerror = () => end('Connection failed. Start the local service and check its logs.');
+    socket.onclose = () => { if (socket) end('Connection closed.'); };
+    status.textContent = 'Connecting…';
+  } catch (error) { end(`Could not start: ${error.message}`); }
+};
+stop.onclick = () => end('Stopped.');
+</script>
+</html>

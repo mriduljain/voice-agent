@@ -35,9 +35,11 @@ A reusable product boundary is the **VA Conversation Runtime**. It should remain
 
 **Status:** Implemented; focused tests pass.
 
-**Validated locally:** Text echo, media fallback behavior, PCM/mu-law helpers and resampling helpers.
+**Validated locally:** Text echo, media fallback behavior, PCM16 helpers and dynamic resampling.
 
-**Not yet validated:** Real Exotel telephone traffic, browser-triggered outbound calls, Cloud Run WebSockets, Gemini end-to-end telephone playback, interruptions, transcripts or tool execution.
+**User-validated:** Gemini audio played clearly on a real Exotel call after the PCM16 and 3,200-byte framing corrections.
+
+**Not yet validated:** Full multi-turn telephone behavior, browser-triggered outbound calls, Cloud Run WebSockets, interruptions, transcripts or tool execution.
 
 ### Mental model
 
@@ -109,7 +111,7 @@ flowchart LR
 - **VA Business tools** — execute registered ADK actions and enforce business authorization and rules.
 - **VA Business configuration** — supplies approved business information and configurable instructions.
 - **VA Transcripts and call outcomes** — stores conversation text, call status and final outcomes for later reference.
-- **Exotel** — external carrier that establishes telephone calls and streams 8 kHz G.711 audio.
+- **Exotel** — external carrier that establishes telephone calls and streams Base64 PCM16 audio at the configured sample rate.
 - **Google Gemini Live** — external model that generates and receives real-time audio and text events.
 - **GTMLeads / API client** — external business UI or service that triggers and observes calls.
 
@@ -153,13 +155,13 @@ sequenceDiagram
     VACONV->>VARUN: start run_live with LiveRequestQueue
 
     loop While call is active
-        EX->>VAEX: Base64 G.711 media
+        EX->>VAEX: Base64 PCM16 media
         VAEX->>VACONV: 16 kHz PCM16
         VACONV->>VARUN: realtime audio queue item
         GEM-->>VARUN: live audio event
         VARUN-->>VACONV: ADK event
         VACONV->>VAEX: 24 kHz PCM16
-        VAEX->>EX: Base64 G.711 media frames
+        VAEX->>EX: Base64 PCM16 media frames
     end
 
     EX->>VAEX: stop or disconnect
@@ -186,15 +188,15 @@ These browser and outbound-call surfaces are part of the target platform but are
 
 - **Exotel audio enters Gemini Live**
 
-  - Mu-law audio is Base64-decoded.
-  - Converted from 8 kHz PCM to 16 kHz PCM.
-  - Sent to Gemini through `LiveRequestQueue`.
+  - Base64 PCM16 audio is decoded.
+  - Carrier-rate PCM is resampled to 16 kHz PCM.
+  - PCM is sent to Gemini through `LiveRequestQueue`.
 
 - **Gemini audio returns to Exotel**
 
   - ADK events are consumed in the background.
-  - 24 kHz PCM is resampled to 8 kHz.
-  - PCM is converted to G.711 mu-law and framed for Exotel as Base64 media.
+  - 24 kHz PCM is resampled to Exotel's configured carrier rate.
+  - PCM16 is framed and Base64-encoded for Exotel media events.
 
 - **Cleanup is scoped to one call**
 
@@ -228,7 +230,7 @@ These browser and outbound-call surfaces are part of the target platform but are
 ### New files
 
 - `app/voice_runtime.py` — per-call ADK Live session and `LiveRequestQueue` runtime.
-- `app/telephony_audio.py` — mu-law conversion and stateful PCM resampling.
+- `app/telephony_audio.py` — stateful PCM16 resampling.
 - `tests/test_telephony_audio.py` — PCM and resampler unit tests.
 - `docs/PROGRAMMER_GUIDE.md` — teaching guide for architecture and Python concepts.
 - `docs/architecture.md` — maintained architecture and milestone record.

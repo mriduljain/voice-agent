@@ -24,14 +24,14 @@ flowchart LR
     VAAUDIO[VA-Pcm and Resampling]
 
     EX -->|WebSocket media| VAEX
-    VAEX -->|8 kHz mu-law to 16 kHz PCM| VACALL
+    VAEX -->|carrier PCM16 to 16 kHz PCM| VACALL
     VACALL -->|LiveRequestQueue| VARUN
     VARUN --> VAADK
     VAADK --> GEM
     GEM -->|24 kHz PCM events| VARUN
     VARUN --> VACALL
     VACALL --> VAAUDIO
-    VAAUDIO -->|8 kHz mu-law media| VAEX
+    VAAUDIO -->|carrier-rate Base64 PCM16| VAEX
     VAEX --> EX
 
     GTM -. business rules and approved information .-> VAADK
@@ -47,7 +47,7 @@ flowchart LR
 - `app/instructions.py` converts business configuration into Gemini instructions.
 - `app/exotel_adapter.py` translates Exotel WebSocket JSON into call audio operations.
 - `app/voice_runtime.py` owns one call's ADK Live session and queue.
-- `app/telephony_audio.py` performs in-memory G.711 mu-law conversion and linear PCM resampling.
+- `app/telephony_audio.py` performs in-memory linear PCM16 resampling.
 - `app/gemini_greeting.py` is a completed-generation experiment, not the continuous conversation path.
 
 ## Shared objects and per-call objects
@@ -83,16 +83,16 @@ sequenceDiagram
     VAC->>ADK: create ADK session
     VAEX->>ADK: start run_live stream
     loop Audio turns
-        EX->>VAEX: base64 mu-law media
-        VAEX->>VAEX: decode 8 kHz PCM
+        EX->>VAEX: Base64 PCM16 media
+        VAEX->>VAEX: decode carrier-rate PCM
         VAEX->>VAEX: resample to 16 kHz PCM
         VAEX->>VAC: queue.send_realtime
         VAC->>GEM: LiveRequestQueue
         GEM-->>ADK: PCM event
         ADK-->>VAC: ADK event
         VAC-->>VAEX: 24 kHz PCM
-        VAEX->>VAEX: resample and frame as 8 kHz mu-law
-        VAEX-->>EX: base64 media
+        VAEX->>VAEX: resample and frame as carrier-rate PCM16
+        VAEX-->>EX: Base64 PCM16 media
     end
     EX->>VAEX: stop or disconnect
     VAEX->>VAC: close queue
@@ -101,12 +101,12 @@ sequenceDiagram
 
 ## Audio formats
 
-- Exotel mu-law media: 8 kHz G.711 mu-law, represented in JSON as Base64.
+- Exotel media: Base64 PCM16 at 8, 16 or 24 kHz, based on `media_format.sample_rate`.
 - Gemini input: observed format `audio/pcm;rate=16000` in this implementation.
 - Gemini output: PCM16, generally 24 kHz; the code accepts PCM MIME types beginning with `audio/pcm` rather than matching one exact string.
 - PCM16 means signed 16-bit integer samples, little-endian in this code.
 - Resampling is done in memory with `LinearResampler`; it does not use FFmpeg or intermediate audio files.
-- Outbound 160-byte mu-law frames are approximately 20 ms of 8 kHz audio.
+- Outbound media messages contain 3,200 bytes of carrier-rate PCM; a short final message is padded with silence.
 
 ## Python concepts
 
@@ -199,13 +199,32 @@ curl http://127.0.0.1:8000/telephony/exotel/health
 
 The test suite does not connect to Exotel or Gemini. A TestClient WebSocket test is only transport-level validation.
 
+### Simulate Exotel locally
+
+Start the service with the command above and the existing Gemini credentials configured. For a live conversation, open `scripts/exotel_live.html` in a browser, click **Start conversation**, and allow microphone access. Use headphones to avoid feeding speaker audio back into the microphone. Click **Stop** to end the simulation. The page connects only to the local service and sends microphone audio as simulated Exotel PCM media; Gemini still requires network access. Browser microphone permissions apply. Interruption handling is not implemented, so already queued playback may continue when you speak.
+
+Alternatively, in another terminal, send a recording of the caller:
+
+```bash
+.venv/bin/python scripts/simulate_exotel.py caller.wav --output response.wav --wait 15
+afplay response.wav
+```
+
+The input must be a mono, signed 16-bit PCM WAV at 8, 16, or 24 kHz. The simulator sends 20 ms frames in real time over the localhost Exotel WebSocket and saves the returned PCM as a WAV at the same rate. The wait starts after the recording finishes; increase it for a slow response. This exercises the local bridge and the configured Gemini Live service, so it requires working Gemini credentials and may incur model charges. It does not connect to Exotel or place a telephone call. It does not reproduce carrier buffering, network behavior, or an interactive microphone conversation. Check server logs if no audio arrives.
+
+On the current Anaconda Python environment, pytest may crash importing `readline`. A local workaround for the focused tests is:
+
+```bash
+.venv/bin/python -c 'import sys, types; sys.modules["readline"] = types.ModuleType("readline"); import pytest; raise SystemExit(pytest.main(["tests/test_exotel_adapter.py", "tests/test_telephony_audio.py", "-q"]))'
+```
+
 ## Verification status
 
 Verified locally:
 
 - FastAPI text echo.
 - Exotel media fallback behavior without a live runner.
-- Mu-law/PCM and even-sized PCM resampler behavior.
+- PCM media decoding and even-sized PCM resampler behavior.
 - Source files compile in the Pylance editor.
 
 User-reported prior validation:
@@ -213,11 +232,12 @@ User-reported prior validation:
 - Cloudflare reached the Exotel adapter.
 - Exotel successfully played a saved Gemini audio greeting.
 - Gemini Live generated audio locally.
+- A live Exotel call played Gemini audio clearly after outbound framing was changed to 3,200 bytes.
 
 Not yet verified in this workspace:
 
 - Continuous Gemini Live response streaming from Exotel.
-- A real simultaneous carrier/ADK telephone call.
+- Full multi-turn telephone conversation and interruption behavior.
 - Cloud Run WebSocket operation.
 - Interruption semantics.
 - Transcripts and tool execution over a telephone call.
