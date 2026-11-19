@@ -24,6 +24,8 @@ from google.adk.runners import Runner
 
 from app.app_utils import services
 from app.app_utils.a2a import attach_a2a_routes
+from app.campaign_api import router as campaign_router
+from app.campaign_store import build_campaign_store
 from app.exotel_adapter import router as exotel_router
 
 
@@ -49,6 +51,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.runner = runner
     app.state.agent_app_name = adk_app.name
+
+    campaign_store = build_campaign_store()
+    await campaign_store.initialize()
+    app.state.campaign_store = campaign_store
     await attach_a2a_routes(
         app,
         agent=root_agent,
@@ -57,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         rpc_path=f"/a2a/{adk_app.name}",
     )
     yield
+    await campaign_store.close()
 
 
 app: FastAPI = get_fast_api_app(
@@ -72,6 +79,7 @@ app.title = "voice-agent"
 app.description = "API for interacting with the Agent voice-agent"
 # register the our Exotel router's endpoints with our FastAPI application.
 app.include_router(exotel_router)
+app.include_router(campaign_router)
 
 
 # Main execution

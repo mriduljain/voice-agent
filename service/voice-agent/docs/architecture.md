@@ -249,3 +249,41 @@ uv run pytest tests/test_exotel_adapter.py tests/test_telephony_audio.py -q
 Observed result: `5 passed, 1 warning`.
 
 This validates local text/media fallback and audio helper behavior. It does not validate live telephony or cloud deployment.
+
+## Milestone 2 — Campaign and outbound call records
+
+### Completed sub-milestone: campaign persistence
+
+- **Campaign records are isolated from live media**
+
+  - Campaign approval is stored separately from individual calls.
+  - A call can only be created after campaign approval.
+
+- **Call records support operational reporting**
+
+  - Seller name and normalized phone number are stored.
+  - Exotel call SID and media stream SID fields support correlation.
+  - Status, timestamps, transcript, outcome, trace URI and error fields are modeled.
+  - Calls are returned newest-first for future report and admin views.
+
+- **Local SQLite is the first storage implementation**
+
+  - Async SQLAlchemy and `aiosqlite` require no Redis or separate database service.
+  - `CAMPAIGN_DATABASE_URI` permits a later PostgreSQL/Cloud SQL URI.
+  - This implementation does not dial a seller or require Exotel credentials.
+
+- **Campaign API is server-side**
+
+  - Create and approve campaigns.
+  - Create queued calls only under approved campaigns.
+  - List calls in reverse chronological order.
+
+### Remaining Milestone 2 work
+
+- Spreadsheet upload and seller validation.
+- Gmail OAuth and company authorization.
+- Exotel REST outbound-call initiation.
+- Live call-ID to media-stream correlation.
+- Status callbacks and completion lifecycle.
+- Transcript, trace, outcome and XLSX report generation.
+- Admin download endpoints and UI.

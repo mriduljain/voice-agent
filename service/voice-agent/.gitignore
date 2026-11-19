@@ -216,3 +216,6 @@ credentials*.json
 # Editor and environment backups
 *~
 *.env~
+
+# Milestone 2 local campaign database
+/data/

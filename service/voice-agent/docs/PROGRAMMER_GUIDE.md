@@ -224,6 +224,19 @@ Not yet verified in this workspace:
 
 Do not claim telephone or cloud validation until it is actually performed.
 
+## Milestone 2: campaign and call persistence
+
+Milestone 2 begins by storing campaign approval and call records independently from live carrier media.
+
+- `app/campaign_store.py` defines async SQLAlchemy models and CRUD operations.
+- `app/campaign_api.py` exposes campaign create/approve/list and call-create/list endpoints.
+- `app/fast_api_app.py` initializes and closes the campaign database during application lifespan.
+- `tests/test_campaign_store.py` validates approval and reverse-chronological call records.
+
+The default database is a local SQLite file under `data/campaigns.db`. Set `CAMPAIGN_DATABASE_URI` to use another SQLAlchemy async database URI. Set `CAMPAIGN_DB_PATH` to change the default SQLite path.
+
+The current persistence slice does not dial Exotel, authenticate admins or generate reports.
+
 ## Remaining milestones
 
 1. Harden SDK integration and test per-call runner/session setup.
