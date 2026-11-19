@@ -2,7 +2,42 @@
 
 This document is the maintained architecture record for the voice platform. Update it after each implementation milestone. The detailed teaching guide remains in `docs/PROGRAMMER_GUIDE.md`.
 
+## Architecture scope
+
+This platform supports both browser and telephone conversations:
+
+- A browser can use microphone/speaker audio directly or trigger an outbound telephone call.
+- GTMLeads or another business can request outbound calls through a VA Call API.
+- Exotel owns the telephone connection and streams telephone media over WebSocket.
+- Gemini Live generates and receives conversation audio through the shared application runtime.
+- VA Business Tools and VA Business Configuration supply approved instructions and enforce business rules.
+- The conversation runtime can save transcripts and call outcomes for later reference.
+
+```text
+Browser / GTMLeads UI
+           |
+           v
+      VA Call API
+           |
+           v
+VA Exotel Adapter -> VA Conversation Runtime -> Gemini Live
+           |                    |
+           v                    v
+       Exotel            VA Tools / Config / Results
+           |
+           v
+    Seller's phone
+```
+
+A reusable product boundary is the **VA Conversation Runtime**. It should remain independent of Exotel-specific WebSocket messages so other carriers can be added later.
+
 ## Milestone 1 — Per-call Exotel-to-ADK Live streaming skeleton
+
+**Status:** Implemented; focused tests pass.
+
+**Validated locally:** Text echo, media fallback behavior, PCM/mu-law helpers and resampling helpers.
+
+**Not yet validated:** Real Exotel telephone traffic, browser-triggered outbound calls, Cloud Run WebSockets, Gemini end-to-end telephone playback, interruptions, transcripts or tool execution.
 
 ### Mental model
 
@@ -21,54 +56,62 @@ Exotel ⇄ carrier adapter ⇄ per-call ADK runtime ⇄ Gemini Live
                  shared agent/runner
 ```
 
-**Status:** Implemented; focused tests pass.
-**Validated:** Local unit and TestClient behavior.
-**Not yet validated:** Real Exotel telephone traffic, Cloud Run WebSockets, Gemini end-to-end telephone playback, interruptions or tool/transcript behavior.
-
 ### Architecture diagram
 
 ```mermaid
 flowchart LR
-    GTM[GTMLeads]:::external
-    EX[Exotel]:::external
-    GEM[Gemini Live]:::external
+    Browser[External: Browser<br/>microphone and speakers]:::external
+    GTM[External: GTMLeads UI / API client]:::external
+    Exotel[External: Exotel]:::external
+    Phone[External: Seller telephone]:::external
+    Gemini[External: Google Gemini Live]:::external
 
-    VAAPI[VA-FastAPI App]
-    VAADK[VA-ADK Agent]
-    VARUN[VA-Shared ADK Runner]
-    VAEX[VA-Exotel Adapter]
-    VACALL[VA-Per-Call Live Runtime]
-    VAAUDIO[VA-PCM and Audio Conversion]
+    VAAPI[VA Call API]
+    VABROWSER[VA Browser audio endpoint]
+    VAEX[VA Exotel adapter]
+    VACONV[VA Conversation runtime]
+    VARUN[VA ADK runner]
+    VATools[VA Business tools]
+    VAConfig[VA Business configuration]
+    VAResults[VA Transcripts and call outcomes]
 
-    EX -->|WebSocket JSON and media| VAEX
-    VAEX -->|Exotel 8 kHz mu-law| VAAUDIO
-    VAAUDIO -->|16 kHz PCM16| VACALL
-    VACALL -->|LiveRequestQueue| VARUN
-    VARUN --> VAADK
-    VAADK --> GEM
+    Browser -->|microphone and speaker audio| VABROWSER
+    GTM -->|outbound call request| VAAPI
+    VAAPI -->|open or request call| VAEX
+    VAAPI -->|status and callback| VAResults
 
-    GEM -->|24 kHz PCM events| VARUN
-    VARUN --> VACALL
-    VACALL --> VAAUDIO
-    VAAUDIO -->|8 kHz mu-law frames| VAEX
-    VAEX -->|WebSocket media| EX
+    Exotel -->|authenticated media WebSocket| VAEX
+    VAEX -->|carrier audio| VACONV
+    Phone -->|telephone audio| Exotel
 
-    GTM -. approved business information .-> VAADK
+    VACONV -->|live session and queue| VARUN
+    VAConfig -->|instructions and approved information| VATools
+    VATools -->|tool requests and results| VARUN
+    VARUN -->|audio and text events| Gemini
+
+    Gemini -->|audio and text events| VARUN
+    VARUN -->|ADK events| VACONV
+    VACONV -->|carrier media| VAEX
+    VAEX -->|telephone media| Exotel
+
+    VACONV -->|transcript and outcome events| VAResults
 
     classDef external fill:#fff3cd,stroke:#9a6700,color:#000
 ```
 
 ## Component responsibilities
 
-- **VA-FastAPI App** — owns process startup, shared ADK runner state and route registration.
-- **VA-ADK Agent** — retains the existing agent, model, business instructions and future ADK tools.
-- **VA-Shared ADK Runner** — shared across all calls and serving surfaces.
-- **VA-Exotel Adapter** — owns Exotel WebSocket protocol handling and stream IDs.
-- **VA-Per-Call Live Runtime** — creates and closes one ADK Live session and queue for one call.
-- **VA-PCM and Audio Conversion** — decodes/encodes G.711 mu-law and resamples PCM in memory.
-- **Exotel** — external carrier and transport provider.
-- **Gemini Live** — external bidirectional audio model.
-- **GTMLeads** — external/business owner represented by configuration and instructions.
+- **VA Call API** — receives outbound-call requests and reports call status or callback results.
+- **VA Browser audio endpoint** — connects browser microphone/speaker audio to the conversation runtime.
+- **VA Exotel adapter** — translates Exotel WebSocket events and carrier media into calls that the conversation runtime can process.
+- **VA Conversation runtime** — owns live call state and combines carrier transport, ADK events and audio conversion.
+- **VA ADK runner** — runs the shared agent definition with Gemini Live and registered tools.
+- **VA Business tools** — execute registered ADK actions and enforce business authorization and rules.
+- **VA Business configuration** — supplies approved business information and configurable instructions.
+- **VA Transcripts and call outcomes** — stores conversation text, call status and final outcomes for later reference.
+- **Exotel** — external carrier that establishes telephone calls and streams 8 kHz G.711 audio.
+- **Google Gemini Live** — external model that generates and receives real-time audio and text events.
+- **GTMLeads / API client** — external business UI or service that triggers and observes calls.
 
 ## Shared versus per-call state
 
@@ -79,47 +122,60 @@ Shared by the application process:
 - ADK agent/app definitions
 - Session and artifact service instances
 
-Owned by a single Exotel stream/call:
+Owned by a browser or telephone call:
 
-- Exotel WebSocket and stream ID
+- Browser WebSocket/audio stream or Exotel WebSocket and stream ID
 - ADK `user_id` and `session_id`
 - `LiveRequestQueue`
-- Inbound 8 kHz→16 kHz resampler
-- Outbound 24 kHz→8 kHz resampler
-- Outbound mu-law byte buffer
-- Gemini event-consumer task
-- Call logs and future transcript/outcome state
+- Carrier and PCM resampling state
+- Outbound audio buffer
+- Gemini/ADK event-consumer task
+- Call logs, transcript and outcome state
+
+The existing implementation creates this per-call state for Exotel. Browser and outbound-call orchestration remain pending.
 
 ## Audio call lifecycle
+
+### Telephone call — Milestone 1 implementation
 
 ```mermaid
 sequenceDiagram
     participant EX as Exotel
-    participant VAEX as VA-Exotel Adapter
-    participant VACALL as VA-Per-Call Live Runtime
-    participant VARUN as VA-Shared ADK Runner
+    participant VAEX as VA Exotel adapter
+    participant VACONV as VA Conversation runtime
+    participant VARUN as VA ADK runner
     participant GEM as Gemini Live
 
     EX->>VAEX: WebSocket connect
     EX->>VAEX: start with stream SID
-    VAEX->>VACALL: create call runtime
-    VACALL->>VARUN: create distinct ADK session
-    VACALL->>VARUN: run_live with LiveRequestQueue
+    VAEX->>VACONV: create call runtime
+    VACONV->>VARUN: create distinct ADK session
+    VACONV->>VARUN: start run_live with LiveRequestQueue
 
     loop While call is active
         EX->>VAEX: Base64 G.711 media
-        VAEX->>VACALL: 16 kHz PCM16
-        VACALL->>GEM: realtime audio queue item
+        VAEX->>VACONV: 16 kHz PCM16
+        VACONV->>VARUN: realtime audio queue item
         GEM-->>VARUN: live audio event
-        VARUN-->>VACALL: ADK event
-        VACALL->>VAEX: 24 kHz PCM16
+        VARUN-->>VACONV: ADK event
+        VACONV->>VAEX: 24 kHz PCM16
         VAEX->>EX: Base64 G.711 media frames
     end
 
     EX->>VAEX: stop or disconnect
-    VAEX->>VACALL: cancel event task and close queue
-    VACALL->>VARUN: delete call session
+    VAEX->>VACONV: end call
+    VACONV->>VARUN: cancel event task and close queue
+    VACONV->>VARUN: delete call session
 ```
+
+### Browser and outbound-call surfaces
+
+- **Browser conversation:** the browser sends microphone audio to the VA browser audio endpoint, which uses the VA conversation runtime and shared VA ADK runner.
+- **Browser-triggered telephone call:** the browser or GTMLeads UI/API client first requests an outbound call through the VA Call API. The call remains independent of the browser session after initiation.
+- **Outbound call transport:** the VA Exotel adapter opens and manages the carrier call, while the VA conversation runtime continues the Gemini Live conversation.
+- **Results:** transcripts and call outcomes are produced after or during the call and stored in VA transcripts/call-outcome references.
+
+These browser and outbound-call surfaces are part of the target platform but are not implemented by the current Exotel skeleton.
 
 ## Milestone 1 accomplishments
 
