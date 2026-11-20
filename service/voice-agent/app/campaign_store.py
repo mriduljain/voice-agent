@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, or_, select, update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -146,6 +146,90 @@ class CampaignStore:
                 .order_by(CallRecord.created_at.desc())
             )
             return list(result.scalars().all())
+
+    async def get_call(self, call_id: str) -> CallRecord | None:
+        async with self._session() as session:
+            return await session.get(CallRecord, call_id)
+
+    async def claim_queued_call(self, call_id: str) -> CallRecord | None:
+        """Atomically reserve one queued call for a future dial attempt."""
+        async with self._session() as session:
+            result = await session.execute(
+                update(CallRecord)
+                .where(CallRecord.id == call_id, CallRecord.status == "queued")
+                .values(status="dialing", started_at=utc_now())
+            )
+            await session.commit()
+            if result.rowcount != 1:
+                return None
+            return await session.get(CallRecord, call_id)
+
+    async def bind_exotel_call(self, call_id: str, call_sid: str) -> CallRecord:
+        """Associate a provider ID without overwriting a conflicting ID."""
+        if not call_sid or len(call_sid) > 100:
+            raise ValueError("Invalid Exotel call SID")
+        async with self._session() as session:
+            result = await session.execute(
+                update(CallRecord)
+                .where(CallRecord.id == call_id,
+                       (CallRecord.exotel_call_sid.is_(None) | (CallRecord.exotel_call_sid == call_sid)))
+                .values(exotel_call_sid=call_sid)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise ValueError("Call not found or Exotel call SID conflicts")
+            await session.commit()
+            return await session.get(CallRecord, call_id)
+
+    async def mark_dial_outcome_unknown(self, call_id: str) -> None:
+        """Record uncertainty without overwriting a later update or bound SID."""
+        async with self._session() as session:
+            await session.execute(
+                update(CallRecord)
+                .where(CallRecord.id == call_id, CallRecord.status == "dialing", CallRecord.exotel_call_sid.is_(None))
+                .values(status="dial_outcome_unknown", error="Exotel request outcome requires reconciliation")
+            )
+            await session.commit()
+
+    async def record_carrier_event(
+        self, call_id: str, call_sid: str, *, status: str, stream_sid: str | None = None,
+    ) -> CallRecord:
+        """Apply a verified carrier event using our ID and the carrier's ID.
+
+        This store method does not authenticate external events. Callers must do
+        that before supplying an event, and must not derive call_id from a SID
+        alone until provider SID uniqueness is enforced.
+        """
+        terminal = {"completed", "failed", "busy", "no-answer"}
+        if status not in terminal | {"answered"}:
+            raise ValueError("Unsupported carrier status")
+        if not isinstance(call_sid, str) or not call_sid.strip() or len(call_sid) > 100:
+            raise ValueError("Invalid Exotel call SID")
+        if stream_sid is not None and (not isinstance(stream_sid, str) or not stream_sid.strip() or len(stream_sid) > 100):
+            raise ValueError("Invalid stream SID")
+        if stream_sid is not None and status != "answered":
+            raise ValueError("Stream SID is only accepted with an answered event")
+
+        active = ("dialing", "dial_outcome_unknown", "answered")
+        allowed = (*active, status) if status in terminal else active
+        conditions = [CallRecord.id == call_id, CallRecord.status.in_(allowed),
+                      or_(CallRecord.exotel_call_sid.is_(None), CallRecord.exotel_call_sid == call_sid)]
+        values = {"exotel_call_sid": call_sid, "status": status}
+        if status == "answered":
+            values["answered_at"] = func.coalesce(CallRecord.answered_at, utc_now())
+            if stream_sid is not None:
+                conditions.append(or_(CallRecord.stream_sid.is_(None), CallRecord.stream_sid == stream_sid))
+                values["stream_sid"] = stream_sid
+        else:
+            values["completed_at"] = func.coalesce(CallRecord.completed_at, utc_now())
+
+        async with self._session() as session:
+            result = await session.execute(update(CallRecord).where(*conditions).values(**values))
+            if result.rowcount != 1:
+                await session.rollback()
+                raise ValueError("Call not found, event out of order, or identifier conflicts")
+            await session.commit()
+            return await session.get(CallRecord, call_id)
 
 
 def build_campaign_store() -> CampaignStore:

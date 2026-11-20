@@ -254,6 +254,46 @@ This validates local text/media fallback and audio helper behavior. It does not 
 
 ## Milestone 2 — Campaign and outbound call records
 
+### Planned outbound call flow
+
+1. The business approves a campaign and creates a queued call for a seller.
+2. Our service claims the queued call, then asks Exotel to call the seller. It saves Exotel's call ID on the record.
+3. When Exotel opens the audio WebSocket, our adapter finds the same call record and loads the approved context for the conversation.
+4. The adapter starts a separate Gemini Live session for that call. Audio flows between the seller's phone, Exotel, the adapter and Gemini.
+5. Exotel sends status updates separately from audio. Our service records the outcome and closes the live session when the call ends.
+
+The audio connection and status updates can arrive before or after the response to the original call request. We need a stable ID created before dialing, so all three can find the same record. A status update must not undo a later status when messages arrive out of order.
+
+**Next steps:** build and test the call lifecycle and ID matching; add the Exotel request using a fake service in tests; connect the media stream and status updates to the record; then test one real call when authorized. Creating a queued record alone does not place a call.
+
+**Current progress:** The store can reserve a queued call once and associate an Exotel call ID without replacing a different ID. This is local groundwork; outbound dialing, status callbacks and loading call context into Gemini are not yet connected.
+
+### Next feature: start a call from the web
+
+The planned web screen will let an authorized user select an approved campaign and ask to call a seller. Our server will ask Exotel to dial the seller's phone. When the seller answers, Exotel will connect the audio stream to our server, which starts the Gemini conversation.
+
+For development on a laptop, a running Cloudflare tunnel can give Exotel a public address that forwards the connection to the local server. The laptop server and tunnel must both stay running, and the Exotel request must use the current public address. A hosted server can later replace the laptop and tunnel.
+
+The first part of this feature is a small Exotel client. Its tests use a pretend Exotel service to check the request and response without calling a phone. The web screen, call button, status handling and live connection to campaign records are still to be built.
+
+The local call service now connects a queued record to that client. It reserves the record before asking for a call and saves the returned Exotel ID. If the request's result is uncertain, the record is held for review instead of automatically trying again. This service is tested with a pretend client and is not connected to a web endpoint yet.
+
+The store can now record an answered or finished call and its stream ID, while protecting a finished call from late updates. This matching is tested locally. Exotel callbacks and audio streams are not yet connected to it: we must first verify how our call ID reaches the stream and how to authenticate both incoming connections.
+
+The local callback and outbound audio endpoints can match simulated Exotel events to a call record, including an update that arrives before the dial request returns. Both new endpoints reject connections unless a verifier is configured; only a test verifier exists today. Checking that real updates come from Exotel remains necessary.
+
+A local test now follows one call from the queued record through a pretend Exotel request, status update, audio connection and completed status. The test uses a pretend carrier and an audio echo; it does not start Gemini or call a phone.
+
+For an approved outbound call, the adapter now prepares the campaign name, business name and seller name for that call's conversation. A separate local test checks that these details reach a pretend conversation runtime. Real Gemini behavior with this context is still untested.
+
+Exotel's public documentation describes the outbound call and two-way audio flow we need. We still need to confirm that this account can use that particular API, how our call ID reaches the audio stream, and how Exotel verifies the source of callbacks and streams. The programmer guide records the details and links. The earlier successful audio test shows that a Voicebot stream worked; it does not establish access under the new plan.
+
+An answered test call on the existing account confirmed that Exotel passes the `call_id` URL parameter into the stream's custom parameters. The client can also read the XML response observed during testing. Both endpoints still require a real, trusted verifier before use.
+
+A user-authorized outbound test then used a temporary campaign, Exotel and Gemini Live. The server matched the stream to the call record, moved audio in both directions and recorded the call as completed. The user reported that the conversation worked perfectly. The temporary server and tunnel were stopped. The test used an isolated, hard-to-guess URL rather than a production Exotel verifier.
+
+The call API now has a start action tested with a pretend carrier. It is disabled unless an authorization check and outbound service are configured. A direct-connection source check is also available, but it is not suitable for a Cloudflare tunnel: the laptop sees the tunnel, not Exotel, as the immediate connection. For laptop testing we must first set up and verify source restrictions at a trusted Cloudflare entry point and get Exotel's current source ranges. No real verifier or web call button is configured yet.
+
 ### Sub-milestone 2.1 — Campaign persistence and reporting foundation ✅
 
 **Status:** Implemented and locally tested.

@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.campaign_store import CallRecord, Campaign
+from app.exotel_client import ExotelCallError
+from app.outbound_calls import CallUnavailableError
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -107,3 +109,24 @@ async def list_calls(campaign_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Campaign not found")
     calls = await _store(request).list_calls(campaign_id)
     return [CallResponse.from_model(call) for call in calls]
+
+
+@router.post("/{campaign_id}/calls/{call_id}/start", response_model=CallResponse)
+async def start_outbound_call(campaign_id: str, call_id: str, request: Request):
+    """Start a queued call only when an authorized service is configured."""
+    verifier = getattr(request.app.state, "outbound_request_verifier", None)
+    service = getattr(request.app.state, "outbound_call_service", None)
+    if verifier is None or not await verifier(request):
+        raise HTTPException(status_code=403, detail="Call request not authorized")
+    if service is None:
+        raise HTTPException(status_code=503, detail="Outbound calling is not configured")
+    call = await _store(request).get_call(call_id)
+    if call is None or call.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Call not found")
+    try:
+        result = await service.start_call(call_id)
+    except CallUnavailableError as exc:
+        raise HTTPException(status_code=409, detail="Call is not queued") from exc
+    except ExotelCallError as exc:
+        raise HTTPException(status_code=502, detail="Call outcome unknown; do not retry until reconciled") from exc
+    return CallResponse.from_model(result)
